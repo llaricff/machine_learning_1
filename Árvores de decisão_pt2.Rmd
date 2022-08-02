@@ -1,0 +1,310 @@
+---
+title: "Árvores de Decisão pt 2"
+output: html_notebook
+---
+
+Material retirado do curso de MBA em Data Science & Analytics, da Esalq/USP.
+Aluna: Larissa Chacon Finzeto
+
+---
+
+**Algorítimos, avaliação e overfitting
+
+Vamos explorar mais sobre o conceito de Cross validation (validação cruzada) e verificar o overfitting da nossa árvore de decisão, com os seguintes passos: 
+
+- Separar amostra de treino
+- Aplicar na amostra de teste
+- Avaliar a acurácia 
+
+Para iniciar, vamos gerar 891 números aleatórios, onde 25% representarão TRUE e 75% FALSE
+
+```{r}
+
+set.seed(123)
+
+bool_treino <- stats::runif(dim(titanic)[1])>.25
+
+runif(dim(titanic)[1])>.25
+
+table(bool_treino)
+
+``` 
+Vamos gerar 2 objetos:
+- O primeiro contendo apenas as observações TRUE e o outro apenas as observações FALSE
+
+```{r}
+
+treino <- titanic[bool_treino,]
+dim(treino)
+
+teste <- titanic[!bool_treino,]
+dim(teste)
+
+titanic %>% str
+
+```
+
+Vamos plotar a nossa árvore com baixo custo de complexidade:
+
+```{r}
+
+set.seed(123)
+arvore <- rpart::rpart(Survived ~ Pclass + Sex + Age + SibSp + Parch + Fare + Embarked,
+                       data = treino,
+                       method = 'class',
+                       xval = 5,
+                       control = rpart.control(cp = 0,
+                                               mindsplit = 1,
+                                               maxdepht = 30))
+
+```
+
+Verificando sua complexidade
+
+```{r}
+
+arvore$frame
+
+```
+                       
+Vamos avaliar a árvore na base de treino
+
+- Para p_treino: Predict da probabilidade de não sobreviventes
+- Para c_treino: factor yes ou no
+
+```{r}
+
+p_treino = stats::predict(arvore,treino)
+c_treino = base::factor(ifelse(p_treino[,2]>.5, "Y", "N"))
+p_treino %>% head
+c_treino %>% head
+
+
+p_teste = stats::predict(arvore,teste)
+c_teste = base::factor(ifelse(p_teste[,2]>.5, "Y", "N"))
+
+```
+
+Agora iremos aplicar comandos na base de treino para verificar sua acurácia
+
+```{r}
+
+tab <- table(c_treino, treino$Survived)
+acc <- (tab[1,1]+tab[2,2])/nrow(treino)
+sprintf('Acurácia na base de treino: %s ', percent(acc))
+
+```
+
+E na base de teste
+
+```{r}
+
+tab <- table(c_teste, teste$Survived)
+acc <- (tab[1,1]+tab[2,2])/nrow(teste)
+sprintf('Acurácia na base de treino: %s ', percent(acc))
+
+```
+
+O fenômeno que acabou de acontecer foi o "Overfitting"
+
+## CURVA ROC
+
+Vamos calcular a área da curva ROC com uma função do pacote caret. A função é twoClassSummary, que espera como entrada um dataframe com esse layout:
+
+- obs: uma coluna contendo o evento observado
+- pred: evento predito
+
+<classe 1> (Y no caso): contém a probabilidade da classe 1
+<classe 2> (Y no caso): contém a probabilidade da classe 2
+
+Primeiro, na base de TREINO
+
+```{r}
+
+aval_treino <- data.frame(obs=treino$Survived,
+                          pred=c_treino,
+                          Y = p_treino[,2],
+                          N = 1-p_treino[,2])
+
+caret::twoClassSummary(aval_treino, lev = levels(aval_treino$obs))
+
+```
+
+Em gráfico:
+
+```{r}
+
+CurvaROC <- ggplot2::ggplot(aval_treino,
+                            aes(d = obs, m = Y, colour = '1')) +
+  plotROC::geom_roc(n.cuts = 0) +
+  scale_color_viridis_d(direction = -1, begin = 0, end = .25) +
+  ggtitle("Curva ROC - Base de Treino") +
+  theme_bw()
+
+CurvaROC
+``` 
+
+Agora, na base de TESTE
+
+```{r}
+
+aval_teste <- data.frame(obs=teste$Survived,
+                         pred = c_teste,
+                         Y = p_teste[,2],
+                         N = 1-p_teste[,2])
+
+caret::twoClassSummary(aval_teste, lev = levels(aval_teste$obs))
+
+```
+
+Em gráfico:
+
+```{r}
+
+Curva_ROC <- ggplot(aval_teste, aes(d = obs, m = Y, colour='a')) + 
+  plotROC::geom_roc(n.cuts = 0) +
+  scale_color_viridis_d(direction = -1, begin=0, end=.25) +
+  theme(legend.position = "none") +
+  ggtitle("Curva ROC - base de teste") +
+  theme_bw()
+
+Curva_ROC
+
+```
+
+## CROSS VALIDATION
+
+Para corrigir os efeitos do overfitting e chegar na acurácia ideal, utilizamos outro modelo de cross validation, no qual dividimos nossa base em 3:
+
+1 - Amostra de Treino
+2 - Amostra de Validação
+3 - Amostra de Teste
+
+Vamos aplicar o algoritmo para vários CP (custo de complexidade) nas amostras 1 e 2, variando o tamanho da árvore.
+Por fim, aplicamos na Amostra de Teste.
+
+** K-FOLD
+
+Dividimos a base em k sub-amostras e para cada uma delas:
+
+- Removemos a sub-amostra como validação
+- Treinamos o modelo com as observações restantes
+- Utilizamos este modelo para classificar a sub-amostra removida
+- Avaliamos a métrica de desempenho do modelo
+- Calculamos a média das métricas de desempenho do modelo
+
+Vamos fazer todo esse processo para cada valor de CP que quisermos.
+
+```{r}
+
+#Vamos aplicar e salvar em um objeto algumas possibilidades de CP
+
+tab_cp <- rpart::printcp(arvore)
+
+``` 
+
+```{r}
+
+plotcp(arvore)
+
+```
+
+Agora vamos encontrar o CP que minimiza (poda) a nossa árvore da melhor maneira, com menor erro relativo e guardá-lo em um objeto
+
+```{r}
+
+tab_cp[which.min(tab_cp[,'xerror']),]
+
+cp_min <- tab_cp[which.min(tab_cp[,'xerror']), 'CP']
+
+```
+
+E, em seguida, utilizá-lo como parâmetro para nossa árvore
+
+```{r}
+
+set.seed(1)
+arvore_poda <- rpart::rpart(Survived ~ Pclass + Sex + Age + SibSp + Parch + Fare + Embarked,
+                            data=treino,
+                            method='class',
+                            xval=0,
+                            control = rpart.control(cp = cp_min,
+                                                    minsplit = 1,
+                                                    maxdepth = 30))
+```
+
+E aplicamos de volta nossas bases de treino e teste
+
+```{r}
+
+p_treino = stats::predict(arvore_pode, treino)
+c_treino = base::factor(ifelse(p_treino[,2]>.5, "Y", "N"))
+p_teste = stats::predict(arvore_pode, teste)
+c_teste = base::factor(ifelse(p_teste[,2]>.5, "Y", "N"))
+
+```
+
+Avaliando as curvas ROC em treino:
+
+```{r}
+
+aval_treino <- data.frame(obs=treino$Survived,
+                          pred=c_treino,
+                          Y = p_treino[,2],
+                          N = 1-p_treino[,2])
+
+caret::twoClassSummary(aval_treino, lev = levels(aval_treino$obs))
+
+```
+
+Gráfico:
+
+```{r}
+CurvaROC <- ggplot2::ggplot(aval_treino,
+                            aes(d = obs, m = Y, colour = '1')) +
+  plotROC::geom_roc(n.cuts = 0) +
+  scale_color_viridis_d(direction = -1, begin = 0, end = .25) +
+  ggtitle("Curva ROC - Base de Treino") +
+  theme_bw()
+
+CurvaROC
+
+```
+
+E em teste
+
+```{r}
+
+aval_teste <- data.frame(obs=teste$Survived,
+                         pred = c_teste,
+                         Y = p_teste[,2],
+                         N = 1-p_teste[,2])
+
+caret::twoClassSummary(aval_teste, lev = levels(aval_teste$obs))
+
+```
+
+Gráfico:
+
+```{r}
+CurvaROC_2 <- ggplot2::ggplot(aval_treino,
+                            aes(d = obs, m = Y, colour = '1')) +
+  plotROC::geom_roc(n.cuts = 0) +
+  scale_color_viridis_d(direction = -1, begin = 0, end = .25) +
+  ggtitle("Curva ROC - Base de Treino") +
+  theme_bw()
+
+CurvaROC_2
+```
+
+
+
+
+
+
+
+
+
+
+
+                      
