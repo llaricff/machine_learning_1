@@ -30,7 +30,7 @@ if(sum(as.numeric(!pacotes %in% installed.packages())) != 0){
 
 Árvores de Decisão - Titanic
 
-Vamos explorar a base de dados TIANIC e avaliar seus sobreviventes
+Vamos explorar a base de dados TITANIC e avaliar seus sobreviventes
 
 ```{r}
 titanic %>% head
